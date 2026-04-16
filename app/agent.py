@@ -11,6 +11,9 @@ from google.adk.tools import AgentTool
 dotenv.load_dotenv()
 from .tools import logging_toolset, monitoring_toolset, gke_toolset, compute_toolset, cloudrun_toolset
 
+# Get GCP Project ID
+_, project_id = google.auth.default()
+
 # Define Logging Agent
 logging_agent = Agent(
     name="logging_agent",
@@ -136,6 +139,7 @@ root_agent = Agent(
     name="cloud_ops_orchestrator",
     model="gemini-3-flash-preview",
     instruction=f"""
+    By default you'll use the project id: {project_id} unless specified otherwise.
     You are a Cloud Operations orchestrator. You delegate tasks to specialized agents.
     Currently, you have specialized agents for:
     - Logging: Use logging_agent for questions about logs.

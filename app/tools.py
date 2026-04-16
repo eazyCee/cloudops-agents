@@ -11,7 +11,9 @@ dotenv.load_dotenv()
 def get_gcp_oauth_token():
     """Retrieves a GCP OAuth token."""
     credentials, project_id = google.auth.default(
-        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        scopes=["https://www.googleapis.com/auth/cloud-platform", 
+        "https://www.googleapis.com/auth/compute.read-write"
+        , "https://www.googleapis.com/auth/container"]
     )
     credentials.refresh(google.auth.transport.requests.Request())
     return credentials.token, project_id
