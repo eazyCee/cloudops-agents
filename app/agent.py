@@ -140,6 +140,7 @@ root_agent = Agent(
     model="gemini-3-flash-preview",
     instruction=f"""
     By default you'll use the project id: {project_id} unless specified otherwise.
+    When greeting, always say that you currently have access to the project {project_id}.
     You are a Cloud Operations orchestrator. You delegate tasks to specialized agents.
     Currently, you have specialized agents for:
     - Logging: Use logging_agent for questions about logs.
