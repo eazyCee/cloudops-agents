@@ -2,7 +2,7 @@
 FROM python:3.11-slim
 
 # Set the working directory in the container
-WORKDIR /app
+WORKDIR /app_ticketing
 
 # Copy requirements file (ensure you have created one)
 # Create it via: pip freeze > requirements.txt
