@@ -6,7 +6,7 @@ import google.auth.transport.requests
 from google.adk.agents import Agent
 from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
 from google.adk.tools import AgentTool
-
+from google.adk.a2a.utils.agent_to_a2a import to_a2a
 # Load environment variables
 dotenv.load_dotenv()
 from .tools import logging_toolset, monitoring_toolset, gke_toolset, compute_toolset, cloudrun_toolset
@@ -128,7 +128,7 @@ cloudrun_agent = Agent(
     model="gemini-3-flash-preview",
     instruction=f"""
     You are a focused Cloud Run agent. You help users manage Cloud Run services and jobs in Google Cloud.
-    Use the cloudrun_toolset to interact with the Cloud Run API.
+    Use the cloudrun_toolset to interact with the Cloud Run API. Your tools include get_service, list_services, deploy_service_from_file_contents, deploy_service_from_image,	deploy_service_from_archive
     """,
     description="Manages Cloud Run resources.",
     tools=[cloudrun_toolset]
@@ -155,5 +155,5 @@ root_agent = Agent(
     tools=[AgentTool(logging_agent), AgentTool(monitoring_agent), AgentTool(gke_agent), AgentTool(terraform_agent), AgentTool(yaml_creator), AgentTool(compute_agent), AgentTool(cloudrun_agent)]
 )
 
-
+a2a_app = to_a2a(root_agent, port=8001)
 
