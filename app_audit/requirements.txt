@@ -1,0 +1,5 @@
+google-adk[a2a]
+google-adk
+python-dotenv
+google-auth
+uvicorn
