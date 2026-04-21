@@ -78,7 +78,7 @@ def fetch_pending_tickets() -> dict:
     # We should probably make this configurable
     query = """
         SELECT ticket_id, project_id, requester, type, status, description, payload
-        FROM `tickets`
+        FROM `agent_ticketing.tickets`
         WHERE status = 'pending'
         LIMIT 10
     """
@@ -113,7 +113,7 @@ def resolve_ticket(ticket_id: str) -> dict:
     """
     client = bigquery.Client()
     query = """
-        UPDATE `tickets`
+        UPDATE `agent_ticketing.tickets`
         SET status = 'resolved'
         WHERE ticket_id = @ticket_id
     """
@@ -142,7 +142,7 @@ def update_ticket_recommendation(ticket_id: str, recommendation: str) -> dict:
     """
     client = bigquery.Client()
     query = """
-        UPDATE `tickets`
+        UPDATE `agent_ticketing.tickets`
         SET recommendation = @recommendation
         WHERE ticket_id = @ticket_id
     """
