@@ -1,15 +1,19 @@
 import os
 import json
 import dotenv
+import google.auth
+import google.auth.transport.requests
 from google.adk.agents import Agent
 from google.adk.a2a.utils.agent_to_a2a import to_a2a
 
+
+_, project_id = google.auth.default()
 # Load environment variables
 dotenv.load_dotenv()
 
-from .tools import github_toolset, gke_toolset, get_project_id
+from .tools import github_toolset, gke_toolset
 
-project_id = get_project_id()
+_, project_id = google.auth.default()
 
 root_agent = Agent(
     name="gke_audit_agent",

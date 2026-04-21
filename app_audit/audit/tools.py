@@ -2,11 +2,12 @@ import os
 import json
 import dotenv
 import sys
+import google.auth
+import google.auth.transport.requests
 from google.adk.tools import ToolContext
 from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
 dotenv.load_dotenv()
-# Add parent directory to path to allow imports from app
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 
 def get_gcp_oauth_token():
     """Retrieves a GCP OAuth token."""
