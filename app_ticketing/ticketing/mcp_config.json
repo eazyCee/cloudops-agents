@@ -23,5 +23,10 @@
     "name": "cloudrun",
     "url": "https://run.googleapis.com/mcp",
     "auth_type": "gcp_oauth"
+  },
+  {
+    "name": "networkmanagement",
+    "url": "https://networkmanagement.googleapis.com/mcp",
+    "auth_type": "gcp_oauth"
   }
 ]

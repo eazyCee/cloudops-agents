@@ -102,27 +102,52 @@ def fetch_pending_tickets() -> dict:
         return {"status": "error", "message": str(e)}
 
 
-def update_ticket_recommendation(ticket_id: str, recommendation: str, status: str) -> dict:
-    """Updates a ticket in BigQuery with recommendations.
+def resolve_ticket(ticket_id: str) -> dict:
+    """Updates the status of a ticket to 'resolved' in BigQuery.
 
     Args:
-        ticket_id: The ID of the ticket to update.
-        recommendation: The generated recommendation or Terraform script.
-        status: The new status of the ticket.
+        ticket_id: The ID of the ticket to resolve.
 
     Returns:
-        dict: A dictionary with status and message.
+        dict: A dictionary with status and a message.
     """
     client = bigquery.Client()
     query = """
         UPDATE `tickets`
-        SET status = @status,
-            payload = JSON_SET(payload, '$.recommendation', @recommendation)
+        SET status = 'resolved'
         WHERE ticket_id = @ticket_id
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("status", "STRING", status),
+            bigquery.ScalarQueryParameter("ticket_id", "STRING", ticket_id),
+        ]
+    )
+    try:
+        query_job = client.query(query, job_config=job_config)
+        query_job.result()
+        return {"status": "success", "message": f"Ticket {ticket_id} resolved."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def update_ticket_recommendation(ticket_id: str, recommendation: str) -> dict:
+    """Updates the recommendation for a ticket in BigQuery.
+
+    Args:
+        ticket_id: The ID of the ticket to update.
+        recommendation: The recommended commands to execute.
+
+    Returns:
+        dict: A dictionary with status and a message.
+    """
+    client = bigquery.Client()
+    query = """
+        UPDATE `tickets`
+        SET recommendation = @recommendation
+        WHERE ticket_id = @ticket_id
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
             bigquery.ScalarQueryParameter("recommendation", "STRING", recommendation),
             bigquery.ScalarQueryParameter("ticket_id", "STRING", ticket_id),
         ]
@@ -130,10 +155,9 @@ def update_ticket_recommendation(ticket_id: str, recommendation: str, status: st
     try:
         query_job = client.query(query, job_config=job_config)
         query_job.result()
-        return {"status": "success", "message": f"Ticket {ticket_id} updated."}
+        return {"status": "success", "message": f"Ticket {ticket_id} recommendation updated."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
 
 # Path to config file in app directory
 config_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "mcp_config.json"))
@@ -145,3 +169,4 @@ monitoring_toolset = mcp_toolsets.get("monitoring")
 gke_toolset = mcp_toolsets.get("gke")
 compute_toolset = mcp_toolsets.get("compute")
 cloudrun_toolset = mcp_toolsets.get("cloudrun")
+networkmanagement_toolset = mcp_toolsets.get("networkmanagement")
