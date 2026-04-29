@@ -4,10 +4,40 @@ This repository contains a multi-agent system for automating cloud operations. I
 
 ## Directory Structure
 
-- `app/`: General cloud management agent (CloudOps).
+- `app/`: General cloud management agent (CloudOps Orchestrator).
 - `app_audit/`: GKE Audit agent.
 - `app_ticketing/`: Ticket processing agent.
 - `app_simulation/`: (Empty) Planned for simulation.
+
+---
+
+# Cloud Operations Orchestrator (`app`)
+
+The `cloud_ops_orchestrator` is a multi-agent system that delegates tasks to specialized sub-agents for managing various Google Cloud services.
+
+## Sub-Agents
+
+- **`logging_agent`**: Searches and retrieves log entries, manages log buckets and views.
+- **`monitoring_agent`**: Queries metrics, manages alert policies, alerts, and dashboards.
+- **`gke_agent`**: Manages GKE clusters and operations, and interacts with Kubernetes resources.
+- **`terraform_agent`**: Generates Terraform scripts based on user requirements.
+- **`yaml_creator`**: Generates Kubernetes YAML manifests for GKE following best practices.
+- **`compute_agent`**: Manages Compute Engine resources (VMs, disks, networks).
+- **`cloudrun_agent`**: Manages Cloud Run services and jobs.
+
+---
+
+# GKE Audit Agent (`app_audit`)
+
+The `gke_audit_agent` is responsible for auditing live GKE cluster configurations against a reference stored in a GitHub repository.
+
+## Overview
+
+The agent:
+1.  Fetches reference Terraform files from GitHub using `github_toolset`.
+2.  Inspects the current state of the GKE cluster using `gke_toolset`.
+3.  Compares the reference configuration with the live configuration.
+4.  Reports discrepancies and recommends fixes aligned with best practices.
 
 ---
 
@@ -24,19 +54,6 @@ The `ticket_processing_agent` is designed to:
 4.  **Recommend** commands or actions and store them back in the ticket.
 5.  **Generate** Terraform scripts or directly execute tasks to fulfill requests.
 6.  **Resolve** tickets by updating their status in BigQuery.
-
-## Directory Structure
-
-```text
-app_ticketing/
-├── ticketing/
-│   ├── __init__.py
-│   ├── agent.py          # Agent definition and instructions
-│   ├── tools.py          # BigQuery tools and MCP loaders
-│   └── mcp_config.json   # Configuration for GCP MCP servers
-├── Dockerfile            # Containerization setup
-└── requirements.txt      # Python dependencies
-```
 
 ## BigQuery Setup
 
@@ -85,32 +102,6 @@ Ensure the service account used by the agent has the following roles:
 - `roles/bigquery.dataEditor` on the dataset.
 - `roles/bigquery.jobUser` on the project.
 
-## Running the Agent
-
-### Locally
-
-1.  Install dependencies:
-    ```bash
-    pip install -r app_ticketing/requirements.txt
-    ```
-2.  Run the agent using `uvicorn` from the `app_ticketing` directory:
-    ```bash
-    cd app_ticketing
-    uvicorn ticketing.agent:a2a_app --host 0.0.0.0 --port 8001
-    ```
-
-### Via Docker
-
-1.  Build the image:
-    ```bash
-    cd app_ticketing
-    docker build -t ticketing-agent .
-    ```
-2.  Run the container:
-    ```bash
-    docker run -p 8001:8001 ticketing-agent
-    ```
-
 ## Simulating a Ticket
 
 To simulate a new ticket for the agent to process, you can insert a row into the table:
@@ -127,6 +118,36 @@ VALUES (
   JSON '{"source": "10.0.0.1", "destination": "10.0.0.2"}'
 );
 ```
+
+---
+
+## Running the Agents
+
+All agents are exposed as A2A services and can be run using `uvicorn` or Docker.
+
+### Example: Running `app_ticketing` Locally
+
+1.  Install dependencies:
+    ```bash
+    pip install -r app_ticketing/requirements.txt
+    ```
+2.  Run the agent using `uvicorn` from the `app_ticketing` directory:
+    ```bash
+    cd app_ticketing
+    uvicorn ticketing.agent:a2a_app --host 0.0.0.0 --port 8001
+    ```
+
+### Example: Running `app` Locally
+
+1.  Install dependencies:
+    ```bash
+    pip install -r app/requirements.txt
+    ```
+2.  Run the agent using `uvicorn` from the `app` directory:
+    ```bash
+    cd app
+    uvicorn cloudops.agent:a2a_app --host 0.0.0.0 --port 8001
+    ```
 
 ---
 
