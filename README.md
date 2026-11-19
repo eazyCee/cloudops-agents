@@ -46,24 +46,60 @@ flowchart LR
 ## Simplified Customer Deployment (1 Command)
 
 ### Prerequisites
-- [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) authenticated (`gcloud auth login`)
+- [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) authenticated (`gcloud auth login` and `gcloud auth application-default login`)
 - A Google Cloud Project with Billing enabled
-- Permissions to enable APIs, create a Service Account, grant IAM roles, and deploy Cloud Run
+- Permissions to enable APIs, create a Service Account, grant IAM roles, and deploy to Vertex AI Agent Runtime (or Cloud Run)
 
-### Option A: 1-Command Deploy to Cloud Run (Recommended)
+### Option 1: 1-Command Deploy to Vertex AI Agent Runtime + Gemini Enterprise (Recommended)
 
-Deploy in **safe read-only evaluation mode** first (summarizes FinOps Hub findings, correlates metrics/logs, and generates Terraform/YAML without mutating resources):
+Deploy directly to **Vertex AI Agent Runtime (Agent Engine)** with managed sessions, least-privilege Service Account impersonation, and native Gemini Enterprise integration (`:streamQuery` + A2A):
 
 ```bash
 git clone https://github.com/eazyCee/cloudops-agents.git
 cd cloudops-agents
 chmod +x deploy.sh
 
-# Preview every gcloud command first (optional)
-./deploy.sh --project YOUR_PROJECT_ID --dry-run
+# (Optional) Preview every command first without making changes
+./deploy.sh agent-runtime --project YOUR_PROJECT_ID --region us-central1 --dry-run
 
-# Deploy to Cloud Run (defaults to safe --mode readonly and private ingress)
-./deploy.sh --project YOUR_PROJECT_ID --region us-central1
+# 1a. Deploy in safe read-only mode (inspect, summarize, generate Terraform/YAML only)
+./deploy.sh agent-runtime \
+  --project YOUR_PROJECT_ID \
+  --region us-central1 \
+  --display-name "CloudOps & FinOps Agent" \
+  --ge-app-id "projects/YOUR_PROJECT_NUMBER/locations/global/collections/default_collection/engines/YOUR_GE_APP_ID"
+
+# 1b. Deploy in readwrite mode (enables approved remediation actions + FinOps Hub markClaimed/markSucceeded)
+./deploy.sh agent-runtime \
+  --project YOUR_PROJECT_ID \
+  --region us-central1 \
+  --mode readwrite \
+  --display-name "CloudOps & FinOps Agent" \
+  --ge-app-id "projects/YOUR_PROJECT_NUMBER/locations/global/collections/default_collection/engines/YOUR_GE_APP_ID"
+```
+
+> **Tip:**
+> - Want to deploy to Agent Runtime **without** registering into Gemini Enterprise yet? Omit `--ge-app-id`, then register later (auto-reads `deployment_metadata.json`):
+>   ```bash
+>   ./deploy.sh publish-ge \
+>     --project YOUR_PROJECT_ID \
+>     --ge-app-id "projects/YOUR_PROJECT_NUMBER/locations/global/collections/default_collection/engines/YOUR_GE_APP_ID"
+>   ```
+> - Want to include **Billing Account CUD recommendations**? Add `--billing-account YOUR_BILLING_ACCOUNT_ID`.
+> - Want to update an existing Agent Runtime in-place? Pass `--agent-engine-id YOUR_ENGINE_ID`.
+
+---
+
+### Option 2: 1-Command Deploy to Cloud Run (Standalone ADK Web UI)
+
+Deploy as a standalone container on Cloud Run with the built-in ADK Web UI:
+
+```bash
+# Safe read-only mode (default)
+./deploy.sh cloud-run --project YOUR_PROJECT_ID --region us-central1
+
+# Or readwrite mode (allows approved remediation actions)
+./deploy.sh cloud-run --project YOUR_PROJECT_ID --region us-central1 --mode readwrite
 ```
 
 Then open the ADK Web UI securely via the Cloud Run proxy:
@@ -77,47 +113,21 @@ gcloud run services proxy cloudops \
 #### Common Deployment Options
 | Goal | Command |
 | :--- | :--- |
-| **Enable automated remediation** (`readwrite` mode) | `./deploy.sh --project YOUR_PROJECT_ID --mode readwrite` |
-| **Include Billing Account CUD recommendations** | `./deploy.sh --project YOUR_PROJECT_ID --billing-account 01ABCD-234567-89EFGH` |
-| **Protect Web UI with Google IAP (corporate SSO)** | `./deploy.sh --project YOUR_PROJECT_ID --iap` |
-| **Choose a different Vertex AI Gemini model** | `./deploy.sh --project YOUR_PROJECT_ID --model gemini-3-flash-preview` |
-| **Clean up / delete Cloud Run service** | `./deploy.sh teardown --project YOUR_PROJECT_ID` |
+| **Agent Runtime + GE (`readwrite` mode)** | `./deploy.sh agent-runtime --project YOUR_PROJECT_ID --region us-central1 --mode readwrite --ge-app-id "projects/.../engines/..."` |
+| **Cloud Run (`readwrite` mode)** | `./deploy.sh cloud-run --project YOUR_PROJECT_ID --region us-central1 --mode readwrite` |
+| **Include Billing Account CUD recommendations** | Add `--billing-account 01ABCD-234567-89EFGH` to either command |
+| **Protect Cloud Run UI with Google IAP (SSO)** | `./deploy.sh cloud-run --project YOUR_PROJECT_ID --iap` |
+| **Choose a different Vertex AI Gemini model** | Add `--model gemini-2.5-flash` (or `gemini-3-flash-preview`) |
+| **Clean up / teardown** | `./deploy.sh teardown --project YOUR_PROJECT_ID` (add `--agent-engine-id ID` for Agent Runtime) |
 
 ---
 
-### Option B: 1-Command Deploy to Vertex AI Agent Runtime + Gemini Enterprise
-
-Deploy directly to **Vertex AI Agent Runtime (Agent Engine)** with managed sessions, A2A + native `:streamQuery` support, and least-privilege Service Account impersonation:
-
-```bash
-# Deploy to Vertex AI Agent Runtime (safe readonly mode by default)
-./deploy.sh agent-runtime --project YOUR_PROJECT_ID --region us-central1
-
-# Deploy in readwrite mode AND register directly into a Gemini Enterprise App
-./deploy.sh agent-runtime \
-  --project YOUR_PROJECT_ID \
-  --region us-central1 \
-  --mode readwrite \
-  --display-name "CloudOps & FinOps Agent" \
-  --ge-app-id "projects/YOUR_PROJECT_NUMBER/locations/global/collections/default_collection/engines/YOUR_GE_APP_ID"
-```
-
-Or register an already-deployed Agent Runtime into Gemini Enterprise afterward (auto-reads `deployment_metadata.json`):
-
-```bash
-./deploy.sh publish-ge \
-  --project YOUR_PROJECT_ID \
-  --ge-app-id "projects/YOUR_PROJECT_NUMBER/locations/global/collections/default_collection/engines/YOUR_GE_APP_ID"
-```
-
-To update an existing Agent Runtime in-place, pass `--agent-engine-id YOUR_ENGINE_ID`.
-
----
-
-### Option C: 2-Minute Local Run (Laptop / Cloud Shell)
+### Option 3: 2-Minute Local Run (Laptop / Cloud Shell)
 
 ```bash
 ./deploy.sh local --project YOUR_PROJECT_ID
+# Or in readwrite mode:
+./deploy.sh local --project YOUR_PROJECT_ID --mode readwrite
 # Opens ADK Web UI at http://127.0.0.1:8000
 ```
 
