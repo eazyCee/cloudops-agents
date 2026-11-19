@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import google.auth
@@ -21,6 +22,10 @@ import google.auth.transport.requests
 import requests
 
 RECOMMENDER_API_BASE = "https://recommender.googleapis.com/v1"
+COMPUTE_API_BASE = "https://compute.googleapis.com/compute/v1"
+CONTAINER_API_BASE = "https://container.googleapis.com/v1"
+CLOUDRUN_API_BASE = "https://run.googleapis.com/v2"
+CLOUDSQL_API_BASE = "https://sqladmin.googleapis.com/v1"
 
 # Official FinOps Hub backing cost recommenders
 FINOPS_HUB_RECOMMENDERS: list[dict[str, str]] = [
@@ -236,92 +241,302 @@ def _extract_monthly_savings(rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_gcp_zone(loc: str) -> bool:
+    parts = loc.split("-")
+    return len(parts) == 3 and len(parts[-1]) == 1 and parts[-1].isalpha()
+
+
+def _region_from_zone(zone: str) -> str:
+    parts = zone.split("-")
+    return "-".join(parts[:2]) if len(parts) >= 2 else zone
+
+
+def _discover_active_locations(
+    target_project: str,
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    """Discover all active GCP zones, regions, and compact resource inventory in parallel."""
+    zones: set[str] = set()
+    regions: set[str] = set()
+    vms: list[dict[str, str]] = []
+    disks: list[dict[str, Any]] = []
+    unattached_disks: list[dict[str, Any]] = []
+    gke_clusters: list[dict[str, str]] = []
+    cloudrun_by_region: dict[str, int] = {}
+    cloudsql_instances: list[dict[str, str]] = []
+    addresses_by_scope: dict[str, int] = {}
+    discovery_notes: list[str] = []
+
+    def _get(label: str, url: str) -> tuple[str, dict[str, Any] | None, str | None]:
+        try:
+            resp = requests.get(url, headers=headers, timeout=12)
+            if resp.status_code == 200:
+                return label, resp.json(), None
+            return label, None, f"{label}: HTTP {resp.status_code}"
+        except requests.RequestException as exc:
+            return label, None, f"{label}: {exc}"
+
+    probes = [
+        ("compute_instances", f"{COMPUTE_API_BASE}/projects/{target_project}/aggregated/instances"),
+        ("compute_disks", f"{COMPUTE_API_BASE}/projects/{target_project}/aggregated/disks"),
+        ("compute_addresses", f"{COMPUTE_API_BASE}/projects/{target_project}/aggregated/addresses"),
+        ("gke_clusters", f"{CONTAINER_API_BASE}/projects/{target_project}/locations/-/clusters"),
+        ("cloudrun_services", f"{CLOUDRUN_API_BASE}/projects/{target_project}/locations/-/services"),
+        ("cloudsql_instances", f"{CLOUDSQL_API_BASE}/projects/{target_project}/instances"),
+    ]
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(lambda p: _get(p[0], p[1]), probes))
+
+    for label, payload, err in results:
+        if err:
+            discovery_notes.append(err)
+            continue
+        if not payload:
+            continue
+
+        if label == "compute_instances":
+            for scope, data in payload.get("items", {}).items():
+                items = data.get("instances") or []
+                if not items:
+                    continue
+                if scope.startswith("zones/"):
+                    z = scope.split("/", 1)[1]
+                    zones.add(z)
+                    regions.add(_region_from_zone(z))
+                for inst in items:
+                    z_name = (inst.get("zone") or "").rsplit("/", 1)[-1]
+                    mt = (inst.get("machineType") or "").rsplit("/", 1)[-1]
+                    vms.append({
+                        "name": inst.get("name", ""),
+                        "zone": z_name,
+                        "machine_type": mt,
+                        "status": inst.get("status", ""),
+                    })
+
+        elif label == "compute_disks":
+            for scope, data in payload.get("items", {}).items():
+                items = data.get("disks") or []
+                if not items:
+                    continue
+                if scope.startswith("zones/"):
+                    z = scope.split("/", 1)[1]
+                    zones.add(z)
+                    regions.add(_region_from_zone(z))
+                elif scope.startswith("regions/"):
+                    regions.add(scope.split("/", 1)[1])
+                for d in items:
+                    loc_name = (d.get("zone") or d.get("region") or "").rsplit("/", 1)[-1]
+                    attached = bool(d.get("users"))
+                    entry = {
+                        "name": d.get("name", ""),
+                        "location": loc_name,
+                        "size_gb": d.get("sizeGb", ""),
+                        "type": (d.get("type") or "").rsplit("/", 1)[-1],
+                        "attached": attached,
+                    }
+                    disks.append(entry)
+                    if not attached:
+                        unattached_disks.append(entry)
+
+        elif label == "compute_addresses":
+            for scope, data in payload.get("items", {}).items():
+                items = data.get("addresses") or []
+                if not items:
+                    continue
+                addresses_by_scope[scope] = len(items)
+                if scope.startswith("regions/"):
+                    regions.add(scope.split("/", 1)[1])
+
+        elif label == "gke_clusters":
+            for c in payload.get("clusters", []) or []:
+                loc = c.get("location", "")
+                if _is_gcp_zone(loc):
+                    zones.add(loc)
+                    regions.add(_region_from_zone(loc))
+                elif loc:
+                    regions.add(loc)
+                gke_clusters.append({
+                    "name": c.get("name", ""),
+                    "location": loc,
+                    "status": c.get("status", ""),
+                    "current_node_count": str(c.get("currentNodeCount", "")),
+                })
+
+        elif label == "cloudrun_services":
+            for s in payload.get("services", []) or []:
+                parts = (s.get("name") or "").split("/")
+                reg = parts[3] if len(parts) > 3 else ""
+                if reg:
+                    regions.add(reg)
+                    cloudrun_by_region[reg] = cloudrun_by_region.get(reg, 0) + 1
+
+        elif label == "cloudsql_instances":
+            for inst in payload.get("items", []) or []:
+                reg = inst.get("region", "")
+                if reg:
+                    regions.add(reg)
+                cloudsql_instances.append({
+                    "name": inst.get("name", ""),
+                    "region": reg,
+                    "tier": inst.get("settings", {}).get("tier", ""),
+                    "state": inst.get("state", ""),
+                })
+
+    return {
+        "project_id": target_project,
+        "active_zones": sorted(zones),
+        "active_regions": sorted(regions),
+        "counts": {
+            "vms": len(vms),
+            "disks": len(disks),
+            "unattached_disks": len(unattached_disks),
+            "gke_clusters": len(gke_clusters),
+            "cloudrun_services": sum(cloudrun_by_region.values()),
+            "cloudsql_instances": len(cloudsql_instances),
+        },
+        "vms": vms[:50],
+        "disks": disks[:50],
+        "unattached_disks": unattached_disks[:25],
+        "gke_clusters": gke_clusters[:25],
+        "cloudrun_services_by_region": cloudrun_by_region,
+        "cloudsql_instances": cloudsql_instances[:25],
+        "static_addresses_by_scope": addresses_by_scope,
+        "discovery_notes": discovery_notes,
+    }
+
+
+def discover_project_locations(project_id: str = "") -> dict[str, Any]:
+    """Auto-discover all active GCP zones, regions, and resources across a project.
+
+    Use this BEFORE calling zone-scoped Compute Engine MCP tools (`list_instances`,
+    `list_disks`) or Recommender MCP tools (`list_recommendations`) when the user does
+    not specify a zone or region, because Google Cloud Compute and Recommender APIs
+    require exact zone/region names and do not support wildcard `locations/-`.
+
+    Args:
+        project_id: Target GCP project ID. Defaults to the agent's active project.
+
+    Returns:
+        Sorted `active_zones`, `active_regions`, resource counts, and compact inventory
+        of VMs, disks (flagging unattached disks), GKE clusters, Cloud Run services, and Cloud SQL.
+    """
+    headers, default_project = get_fresh_gcp_headers(project_id or None)
+    target_project = project_id or default_project
+    if not target_project:
+        return {"error": "No project_id provided and GOOGLE_CLOUD_PROJECT is not set."}
+    return _discover_active_locations(target_project, headers)
+
+
 def check_resource_recommendations(
     project_id: str = "",
-    location: str = "us-central1-a",
+    location: str = "auto",
     service: str = "all",
     billing_account_id: str = "",
 ) -> dict[str, Any]:
     """Query live FinOps Hub recommendations from `recommender.googleapis.com/v1` before taking actions.
 
-    Checks active recommendations across Compute Engine, GKE, Cloud SQL, Cloud Run,
-    and (if `billing_account_id` is provided) Committed Use Discounts (CUDs).
+    Because Google Cloud's Recommender API does not support wildcard `locations/-`, passing
+    `location="auto"` (the default) automatically discovers EVERY active zone and region in the
+    project (across Compute Engine VMs/disks/IPs, GKE, Cloud Run, and Cloud SQL) and scans all
+    applicable FinOps Hub recommenders in parallel.
 
     Args:
         project_id: Target GCP project ID. Defaults to the agent's active project.
-        location: GCP zone (e.g. 'us-central1-a') or region (e.g. 'us-central1').
-            If a zone is passed, both the zone and derived region are queried automatically.
+        location: Pass `'auto'` (default) to auto-discover and scan ALL active zones and regions
+            in the project, OR pass a specific GCP zone (e.g. `'asia-southeast2-a'`) or region
+            (e.g. `'asia-southeast2'`).
         service: Service scope to scan ('all', 'compute', 'gke', 'cloudsql', 'cloudrun', 'cud', 'project').
         billing_account_id: Optional Cloud Billing Account ID (e.g. '01ABCD-234567-89EFGH')
             to include Spend-Based and Resource-Based CUD recommendations.
 
     Returns:
-        Structured summary of active FinOps Hub recommendations, estimated savings,
-        resource names, etags (for markClaimed/markSucceeded), and any per-recommender errors.
+        Structured summary of scanned zones/regions, active FinOps Hub recommendations,
+        estimated monthly savings, resource names, etags (for markClaimed/markSucceeded),
+        and any per-recommender errors.
     """
     headers, default_project = get_fresh_gcp_headers(project_id or None)
     target_project = project_id or default_project
     if not target_project:
         return {"error": "No project_id provided and GOOGLE_CLOUD_PROJECT is not set."}
 
-    loc = (location or "us-central1-a").strip()
-    parts = loc.split("-")
-    is_zone = len(parts) == 3 and len(parts[-1]) == 1
-    region = "-".join(parts[:2]) if is_zone else loc
+    loc = (location or "auto").strip()
+    zones_to_scan: list[str] = []
+    regions_to_scan: list[str] = []
+    discovered_summary: dict[str, Any] | None = None
+
+    if loc.lower() in ("auto", "all", "*", ""):
+        discovery = _discover_active_locations(target_project, headers)
+        zones_to_scan = discovery["active_zones"]
+        regions_to_scan = discovery["active_regions"]
+        discovered_summary = discovery["counts"]
+        if not zones_to_scan and not regions_to_scan:
+            fallback_region = os.environ.get("GOOGLE_CLOUD_REGION", "us-central1").strip() or "us-central1"
+            regions_to_scan = [fallback_region]
+            zones_to_scan = [f"{fallback_region}-a"]
+    elif loc.lower() == "global":
+        pass
+    elif _is_gcp_zone(loc):
+        zones_to_scan = [loc]
+        regions_to_scan = [_region_from_zone(loc)]
+    else:
+        regions_to_scan = [loc]
 
     svc = (service or "all").strip().lower()
     targets: list[tuple[str, str]] = []
 
     if svc in ("all", "compute"):
-        if is_zone:
+        for z in zones_to_scan:
             targets.extend([
-                (f"projects/{target_project}/locations/{loc}", "google.compute.instance.MachineTypeRecommender"),
-                (f"projects/{target_project}/locations/{loc}", "google.compute.instance.IdleResourceRecommender"),
-                (f"projects/{target_project}/locations/{loc}", "google.compute.disk.IdleResourceRecommender"),
-                (f"projects/{target_project}/locations/{loc}", "google.compute.instanceGroupManager.MachineTypeRecommender"),
-                (f"projects/{target_project}/locations/{loc}", "google.compute.IdleResourceRecommender"),
-                (f"projects/{target_project}/locations/{loc}", "google.compute.RightSizeResourceRecommender"),
+                (f"projects/{target_project}/locations/{z}", "google.compute.instance.MachineTypeRecommender"),
+                (f"projects/{target_project}/locations/{z}", "google.compute.instance.IdleResourceRecommender"),
+                (f"projects/{target_project}/locations/{z}", "google.compute.disk.IdleResourceRecommender"),
+                (f"projects/{target_project}/locations/{z}", "google.compute.instanceGroupManager.MachineTypeRecommender"),
+                (f"projects/{target_project}/locations/{z}", "google.compute.IdleResourceRecommender"),
+                (f"projects/{target_project}/locations/{z}", "google.compute.RightSizeResourceRecommender"),
+            ])
+        for reg in regions_to_scan:
+            targets.extend([
+                (f"projects/{target_project}/locations/{reg}", "google.compute.instanceGroupManager.MachineTypeRecommender"),
+                (f"projects/{target_project}/locations/{reg}", "google.compute.disk.IdleResourceRecommender"),
+                (f"projects/{target_project}/locations/{reg}", "google.compute.address.IdleResourceRecommender"),
             ])
         targets.extend([
-            (f"projects/{target_project}/locations/{region}", "google.compute.instanceGroupManager.MachineTypeRecommender"),
-            (f"projects/{target_project}/locations/{region}", "google.compute.address.IdleResourceRecommender"),
             (f"projects/{target_project}/locations/global", "google.compute.image.IdleResourceRecommender"),
+            (f"projects/{target_project}/locations/global", "google.compute.address.IdleResourceRecommender"),
         ])
 
     if svc in ("all", "gke"):
-        targets.append((f"projects/{target_project}/locations/{region}", "google.container.DiagnosisRecommender"))
-        if is_zone:
-            targets.append((f"projects/{target_project}/locations/{loc}", "google.container.DiagnosisRecommender"))
+        for reg in regions_to_scan:
+            targets.append((f"projects/{target_project}/locations/{reg}", "google.container.DiagnosisRecommender"))
+        for z in zones_to_scan:
+            targets.append((f"projects/{target_project}/locations/{z}", "google.container.DiagnosisRecommender"))
 
     if svc in ("all", "cloudsql"):
-        targets.extend([
-            (f"projects/{target_project}/locations/{region}", "google.cloudsql.instance.IdleRecommender"),
-            (f"projects/{target_project}/locations/{region}", "google.cloudsql.instance.OverprovisionedRecommender"),
-            (f"projects/{target_project}/locations/{region}", "google.cloudsql.instance.UnderprovisionedRecommender"),
-        ])
+        for reg in regions_to_scan:
+            targets.extend([
+                (f"projects/{target_project}/locations/{reg}", "google.cloudsql.instance.IdleRecommender"),
+                (f"projects/{target_project}/locations/{reg}", "google.cloudsql.instance.OverprovisionedRecommender"),
+                (f"projects/{target_project}/locations/{reg}", "google.cloudsql.instance.UnderprovisionedRecommender"),
+            ])
 
     if svc in ("all", "cloudrun"):
-        targets.append((f"projects/{target_project}/locations/{region}", "google.run.service.CostRecommender"))
+        for reg in regions_to_scan:
+            targets.append((f"projects/{target_project}/locations/{reg}", "google.run.service.CostRecommender"))
 
     if svc in ("all", "project"):
         targets.append((f"projects/{target_project}/locations/global", "google.resourcemanager.projectUtilization.Recommender"))
 
     ba_id = billing_account_id or os.environ.get("BILLING_ACCOUNT_ID", "")
     if svc in ("all", "cud") and ba_id:
-        targets.extend([
-            (f"billingAccounts/{ba_id}/locations/global", "google.cloudbilling.commitment.SpendBasedCommitmentRecommender"),
-            (f"billingAccounts/{ba_id}/locations/{region}", "google.compute.commitment.UsageCommitmentRecommender"),
-        ])
+        targets.append((f"billingAccounts/{ba_id}/locations/global", "google.cloudbilling.commitment.SpendBasedCommitmentRecommender"))
+        for reg in regions_to_scan:
+            targets.append((f"billingAccounts/{ba_id}/locations/{reg}", "google.compute.commitment.UsageCommitmentRecommender"))
 
-    findings: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
-    seen_targets: set[tuple[str, str]] = set()
+    unique_targets = list(dict.fromkeys(targets))
 
-    for parent, rec_id in targets:
-        if (parent, rec_id) in seen_targets:
-            continue
-        seen_targets.add((parent, rec_id))
-
+    def _query_one(target: tuple[str, str]) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
+        parent, rec_id = target
         url = f"{RECOMMENDER_API_BASE}/{parent}/recommenders/{rec_id}/recommendations"
         try:
             resp = requests.get(
@@ -332,9 +547,11 @@ def check_resource_recommendations(
             )
             if resp.status_code == 200:
                 payload = resp.json()
+                local_findings: list[dict[str, Any]] = []
                 for item in payload.get("recommendations", []):
-                    findings.append({
+                    local_findings.append({
                         "name": item.get("name"),
+                        "location": parent.split("/locations/", 1)[-1],
                         "recommender_id": rec_id,
                         "subtype": item.get("recommenderSubtype"),
                         "priority": item.get("priority"),
@@ -345,48 +562,59 @@ def check_resource_recommendations(
                         "target_resources": item.get("targetResources", []),
                         "last_refresh_time": item.get("lastRefreshTime"),
                     })
-            elif resp.status_code in (403, 404):
-                errors.append({
-                    "recommender_id": rec_id,
-                    "parent": parent,
-                    "status": str(resp.status_code),
-                    "detail": resp.text[:220],
-                })
-            else:
-                errors.append({
-                    "recommender_id": rec_id,
-                    "parent": parent,
-                    "status": str(resp.status_code),
-                    "detail": resp.text[:220],
-                })
+                return local_findings, None
+            return [], {
+                "recommender_id": rec_id,
+                "parent": parent,
+                "status": str(resp.status_code),
+                "detail": resp.text[:220],
+            }
         except requests.RequestException as exc:
-            errors.append({
+            return [], {
                 "recommender_id": rec_id,
                 "parent": parent,
                 "status": "NETWORK_ERROR",
                 "detail": str(exc),
-            })
+            }
 
+    findings: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    max_workers = min(16, max(1, len(unique_targets)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for local_findings, err in pool.map(_query_one, unique_targets):
+            findings.extend(local_findings)
+            if err:
+                errors.append(err)
+
+    findings.sort(
+        key=lambda f: f.get("cost_impact", {}).get("estimated_monthly_savings", 0.0),
+        reverse=True,
+    )
     total_monthly_savings = round(
         sum(f["cost_impact"].get("estimated_monthly_savings", 0.0) for f in findings), 2
     )
 
-    return {
+    result: dict[str, Any] = {
         "project_id": target_project,
-        "location_checked": loc,
-        "derived_region": region,
+        "location_mode": loc,
+        "zones_scanned": zones_to_scan,
+        "regions_scanned": regions_to_scan,
+        "global_scanned": True,
         "service_filter": svc,
-        "recommenders_queried": len(seen_targets),
+        "recommenders_queried": len(unique_targets),
         "active_recommendations_found": len(findings),
         "total_estimated_monthly_savings_usd": total_monthly_savings,
         "recommendations": findings,
         "permission_or_api_notes": errors[:8],
         "guidance": (
-            "If active_recommendations_found is 0, remember Active Assist Recommenders require 8-14 days of "
-            "utilization history. Also check Cloud Monitoring metrics and Cloud Audit Logs to detect recent "
-            "forgotten peak-event scale-ups before taking any action."
+            "If active_recommendations_found is 0 for a specific workload, remember Active Assist Recommenders "
+            "require 8-14 days of continuous utilization history. Correlate with Cloud Monitoring metrics and "
+            "Cloud Audit Logs to detect recent forgotten peak-event scale-ups before taking any action."
         ),
     }
+    if discovered_summary is not None:
+        result["discovered_resource_counts"] = discovered_summary
+    return result
 
 
 def _update_recommendation_state(

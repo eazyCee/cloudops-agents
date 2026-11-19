@@ -157,7 +157,7 @@ All Google Cloud Remote MCP servers become available automatically when `./deplo
 `deploy.sh` creates a dedicated Service Account (`cloudops-finops-agent-sa@<PROJECT_ID>.iam.gserviceaccount.com`) with least-privilege roles:
 
 - **Read-Only Mode (`--mode readonly`, default):**
-  `roles/aiplatform.user`, `roles/mcp.toolUser`, `roles/serviceusage.serviceUsageConsumer`, `roles/recommender.viewer`, `roles/monitoring.viewer`, `roles/logging.viewer`, `roles/compute.viewer`, `roles/container.viewer`, `roles/run.viewer`, `roles/bigquery.dataViewer`, `roles/bigquery.jobUser`
+  `roles/aiplatform.user`, `roles/mcp.toolUser`, `roles/serviceusage.serviceUsageConsumer`, `roles/recommender.viewer`, `roles/monitoring.viewer`, `roles/logging.viewer`, `roles/compute.viewer`, `roles/container.viewer`, `roles/run.viewer`, `roles/cloudsql.viewer`, `roles/bigquery.dataViewer`, `roles/bigquery.jobUser`
 - **Read-Write Mode (`--mode readwrite`, adds):**
   `roles/recommender.computeAdmin`, `roles/recommender.cloudsqlAdmin`, `roles/recommender.runAdmin`, `roles/compute.instanceAdmin.v1`, `roles/container.developer`, `roles/run.developer`
 - **Optional Billing Account Scope (`--billing-account <ID>`):**
@@ -167,8 +167,8 @@ All Google Cloud Remote MCP servers become available automatically when `./deplo
 
 ## Example Prompts to Try
 
-1. **FinOps Hub Executive Summary:**
-   > *"Check all FinOps Hub recommendations in `us-central1-a` and summarize our biggest monthly cost savings opportunities."*
+1. **FinOps Hub Executive Summary (Auto-discovers ALL active zones & regions):**
+   > *"Check all FinOps Hub recommendations across our project and summarize our biggest monthly cost savings opportunities."*
 2. **Pre-Action Safety Check Before Downscaling a Peak Resource:**
    > *"I think we left our checkout VM scaled up after last week's promo event. Check FinOps Hub recommendations, recent CPU utilization in Cloud Monitoring, and Audit Logs before suggesting how to scale it down."*
 3. **GitOps / Terraform Remediation (Zero State Drift):**

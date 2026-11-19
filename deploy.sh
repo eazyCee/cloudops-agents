@@ -209,6 +209,7 @@ setup_apis_and_iam() {
     roles/compute.viewer
     roles/container.viewer
     roles/run.viewer
+    roles/cloudsql.viewer
     roles/bigquery.dataViewer
     roles/bigquery.jobUser
   )

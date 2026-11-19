@@ -20,6 +20,7 @@ dotenv.load_dotenv()
 
 from .finops_tools import (
     check_resource_recommendations,
+    discover_project_locations,
     list_finops_recommender_catalog,
     mark_recommendation_claimed,
     mark_recommendation_succeeded,
@@ -121,11 +122,14 @@ finops_recommender_agent = Agent(
     summarize cost/utilization findings clearly, and keep FinOps Hub recommendation states in sync.
 
     Capabilities & Tools:
-    1. Pre-Action & Multi-Recommender Scan:
-       - `check_resource_recommendations`: Fast multi-recommender REST scan across Compute Engine
-         (VM/MIG rightsizing, idle VMs/disks/IPs/images/reservations), GKE (DiagnosisRecommender),
-         Cloud SQL (idle/overprovisioned/underprovisioned), Cloud Run (CostRecommender),
-         Unattended Projects, and CUDs (if billing_account_id is available).
+    1. Pre-Action & Multi-Region FinOps Scan (ALWAYS start here):
+       - `check_resource_recommendations`: Fast parallel REST scan against `recommender.googleapis.com/v1`.
+         ALWAYS leave `location="auto"` (default) unless the user asks for one specific zone/region —
+         `location="auto"` automatically discovers EVERY active zone & region in the project (Compute VMs,
+         disks, IPs, GKE, Cloud Run, Cloud SQL) so nothing in `asia-southeast2`, `asia-southeast1`,
+         `us-central1`, etc. is ever missed!
+       - `discover_project_locations`: Lists all active zones, regions, and resource counts (including
+         unattached disks) across the entire project.
        - `list_finops_recommender_catalog`: Lists all 16 verified FinOps Hub Recommender IDs and scopes.
     2. Official Google Cloud Recommender MCP (`recommender.googleapis.com/mcp`):
        - `list_recommendations`, `get_recommendation`, `list_insights`, `get_insight`
@@ -142,13 +146,15 @@ finops_recommender_agent = Agent(
        - `mark_recommendation_succeeded`: Marks a recommendation `SUCCEEDED` after action succeeds.
 
     Important guidance:
-    - Always return exact resource names, Recommender IDs, subtypes, projected monthly savings,
+    - Always report which zones and regions were actually scanned (`zones_scanned`, `regions_scanned`).
+    - Always return exact resource names, locations, Recommender IDs, subtypes, projected monthly savings,
       and recommendation `name` + `etag` so downstream actions can track them.
-    - If 0 active recommendations are returned, explicitly note that Active Assist Recommenders
+    - If 0 active recommendations are returned for a workload, explicitly note that Active Assist Recommenders
       observe 8-14 days of history, and suggest correlating with Cloud Monitoring + Audit Logs
       for recent peak-event scale-ups.
     """,
     tools=_present(
+        discover_project_locations,
         list_finops_recommender_catalog,
         check_resource_recommendations,
         mark_recommendation_claimed,
@@ -233,15 +239,25 @@ gke_agent = Agent(
 compute_agent = Agent(
     name="compute_agent",
     model=MODEL,
-    description="Inspects and manages Compute Engine VMs, disks, and networks.",
+    description="Inspects and manages Compute Engine VMs, disks, and networks across all active zones.",
     instruction=f"""
     You are a focused Compute Engine agent. You inspect and manage Compute Engine resources
     (VMs, disks, networks, etc.) in Google Cloud using the Compute Engine MCP toolset.
+    Default project: {PROJECT_ID}.
     Current execution mode: {EXECUTION_MODE}.
+
+    IMPORTANT multi-zone rule:
+    - Compute Engine MCP tools (`list_instances`, `list_disks`) require an exact `zone` parameter.
+    - Whenever the user does NOT specify a zone (e.g. "list all VMs/disks across all zones"),
+      ALWAYS call `discover_project_locations` FIRST to discover every active zone and resource
+      in the project instead of guessing `us-central1-a`! Then use Compute MCP tools on the
+      discovered zones for deeper inspection or approved actions.
+
     If execution mode is 'readonly', NEVER execute mutating operations (create, delete, stop, resize);
     only read/list resources and report the exact recommended gcloud or Terraform action instead.
     """,
-    tools=_present(compute_toolset),
+    tools=_present(discover_project_locations, compute_toolset),
+    after_tool_callback=_truncate_large_tool_output,
 )
 
 # ---------------------------------------------------------------------------
