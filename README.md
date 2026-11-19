@@ -85,7 +85,36 @@ gcloud run services proxy cloudops \
 
 ---
 
-### Option B: 2-Minute Local Run (Laptop / Cloud Shell)
+### Option B: 1-Command Deploy to Vertex AI Agent Runtime + Gemini Enterprise
+
+Deploy directly to **Vertex AI Agent Runtime (Agent Engine)** with managed sessions, A2A + native `:streamQuery` support, and least-privilege Service Account impersonation:
+
+```bash
+# Deploy to Vertex AI Agent Runtime (safe readonly mode by default)
+./deploy.sh agent-runtime --project YOUR_PROJECT_ID --region us-central1
+
+# Deploy in readwrite mode AND register directly into a Gemini Enterprise App
+./deploy.sh agent-runtime \
+  --project YOUR_PROJECT_ID \
+  --region us-central1 \
+  --mode readwrite \
+  --display-name "CloudOps & FinOps Agent" \
+  --ge-app-id "projects/YOUR_PROJECT_NUMBER/locations/global/collections/default_collection/engines/YOUR_GE_APP_ID"
+```
+
+Or register an already-deployed Agent Runtime into Gemini Enterprise afterward (auto-reads `deployment_metadata.json`):
+
+```bash
+./deploy.sh publish-ge \
+  --project YOUR_PROJECT_ID \
+  --ge-app-id "projects/YOUR_PROJECT_NUMBER/locations/global/collections/default_collection/engines/YOUR_GE_APP_ID"
+```
+
+To update an existing Agent Runtime in-place, pass `--agent-engine-id YOUR_ENGINE_ID`.
+
+---
+
+### Option C: 2-Minute Local Run (Laptop / Cloud Shell)
 
 ```bash
 ./deploy.sh local --project YOUR_PROJECT_ID

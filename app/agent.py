@@ -74,15 +74,35 @@ def _truncate_large_tool_output(tool: Any, args: dict[str, Any], tool_context: A
 
 PROJECT_ID = _resolve_project_id()
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_LOCATION = os.environ.get("GEMINI_LOCATION", "").strip()
 EXECUTION_MODE = os.environ.get("AGENT_EXECUTION_MODE", "readwrite").strip().lower()
 BILLING_ACCOUNT_ID = os.environ.get("BILLING_ACCOUNT_ID", "").strip()
+
+
+def _build_model() -> Any:
+    """Resolve the Gemini model, optionally pinning its Vertex AI location (e.g. 'global').
+
+    This lets Agent Runtime run in a regional location (such as us-central1) for
+    managed sessions while still calling global-only models (e.g. Gemini 3.x/4.x).
+    """
+    if MODEL_LOCATION:
+        from google.adk.models.google_llm import Gemini
+
+        return Gemini(
+            model=MODEL_NAME,
+            client_kwargs={"location": MODEL_LOCATION},
+        )
+    return MODEL_NAME
+
+
+MODEL = _build_model()
 
 # ---------------------------------------------------------------------------
 # 1. FinOps Hub & Recommender Agent (NEW — Checked FIRST Before Actions)
 # ---------------------------------------------------------------------------
 finops_recommender_agent = Agent(
     name="finops_recommender_agent",
-    model=MODEL_NAME,
+    model=MODEL,
     description=(
         "Checks Google Cloud FinOps Hub recommendations (Recommender API), "
         "Cloud Billing SKU pricing, BigQuery billing/recommendations exports, "
@@ -142,7 +162,7 @@ finops_recommender_agent = Agent(
 # ---------------------------------------------------------------------------
 logging_agent = Agent(
     name="logging_agent",
-    model=MODEL_NAME,
+    model=MODEL,
     description="Searches Cloud Logging and Cloud Audit Logs to debug issues or attribute who scaled/changed resources.",
     instruction="""
     You are a focused Logging & Cloud Audit Logs agent. You help users search and retrieve log entries,
@@ -163,7 +183,7 @@ logging_agent = Agent(
 # ---------------------------------------------------------------------------
 monitoring_agent = Agent(
     name="monitoring_agent",
-    model=MODEL_NAME,
+    model=MODEL,
     description="Queries Cloud Monitoring time series, PromQL metrics, and alerts to verify live utilization before actions.",
     instruction="""
     You are a focused Cloud Monitoring agent. You query PromQL ranges, aggregated time series, and alerts
@@ -191,7 +211,7 @@ monitoring_agent = Agent(
 # ---------------------------------------------------------------------------
 gke_agent = Agent(
     name="gke_agent",
-    model=MODEL_NAME,
+    model=MODEL,
     description="Inspects and manages GKE clusters, node pools, operations, and Kubernetes resources.",
     instruction="""
     You are a focused GKE agent. You help users inspect and manage GKE clusters, node pools,
@@ -209,7 +229,7 @@ gke_agent = Agent(
 # ---------------------------------------------------------------------------
 compute_agent = Agent(
     name="compute_agent",
-    model=MODEL_NAME,
+    model=MODEL,
     description="Inspects and manages Compute Engine VMs, disks, and networks.",
     instruction=f"""
     You are a focused Compute Engine agent. You inspect and manage Compute Engine resources
@@ -226,7 +246,7 @@ compute_agent = Agent(
 # ---------------------------------------------------------------------------
 cloudrun_agent = Agent(
     name="cloudrun_agent",
-    model=MODEL_NAME,
+    model=MODEL,
     description="Inspects and manages Cloud Run services and jobs.",
     instruction=f"""
     You are a focused Cloud Run agent. You inspect and manage Cloud Run services and jobs
@@ -243,7 +263,7 @@ cloudrun_agent = Agent(
 # ---------------------------------------------------------------------------
 terraform_agent = Agent(
     name="terraform_agent",
-    model=MODEL_NAME,
+    model=MODEL,
     description="Generates Terraform HCL configs and GitOps diffs for FinOps rightsizing or new infrastructure.",
     instruction="""
     You are a focused Terraform IaC agent. You generate clean, production-grade Terraform (*.tf)
@@ -256,7 +276,7 @@ terraform_agent = Agent(
 
 yaml_creator = Agent(
     name="yaml_creator",
-    model=MODEL_NAME,
+    model=MODEL,
     description="Generates Kubernetes YAML manifests for GKE following FinOps and reliability best practices.",
     instruction="""
     You are a focused Kubernetes YAML creator agent for GKE. You generate manifests (Deployments,
@@ -271,7 +291,7 @@ yaml_creator = Agent(
 # ---------------------------------------------------------------------------
 root_agent = Agent(
     name="cloud_ops_orchestrator",
-    model=MODEL_NAME,
+    model=MODEL,
     instruction=f"""
     You are the Google Cloud Operations & FinOps Orchestrator.
     Default GCP Project ID: `{PROJECT_ID}` (unless the user specifies another project).

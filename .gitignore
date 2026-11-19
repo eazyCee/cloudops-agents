@@ -38,3 +38,9 @@ venv.bak/
 
 # macOS
 .DS_Store
+
+# Agent Runtime / ADK deployment artifacts
+deployment_metadata.json
+.agent_engine_config.json
+app_tmp*/
+.adk/
