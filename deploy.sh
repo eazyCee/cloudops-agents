@@ -422,11 +422,12 @@ if [[ "$COMMAND" == "agent-runtime" ]]; then
 
   CONFIG_FILE="$(pwd)/.agent_engine_config.json"
   if [[ "$DRY_RUN" == "false" ]]; then
-    python3 - "$CONFIG_FILE" "$MODEL_NAME" "$LOCATION" "$MODE" "$BILLING_ACCOUNT_ID" <<'PYEOF'
+    python3 - "$CONFIG_FILE" "$PROJECT_ID" "$MODEL_NAME" "$LOCATION" "$MODE" "$BILLING_ACCOUNT_ID" <<'PYEOF'
 import json, sys
-cfg_path, model_name, model_loc, mode, billing_id = sys.argv[1:6]
+cfg_path, project_id, model_name, model_loc, mode, billing_id = sys.argv[1:7]
 env_vars = {
     "GOOGLE_GENAI_USE_VERTEXAI": "True",
+    "TARGET_GCP_PROJECT": project_id,
     "GEMINI_MODEL": model_name,
     "GEMINI_LOCATION": model_loc,
     "AGENT_EXECUTION_MODE": mode,

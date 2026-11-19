@@ -168,7 +168,10 @@ def get_fresh_gcp_headers(quota_project: str | None = None) -> tuple[dict[str, s
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
             _CACHED_PROJECT_ID = (
-                os.environ.get("GOOGLE_CLOUD_PROJECT") or detected_project or ""
+                os.environ.get("TARGET_GCP_PROJECT")
+                or os.environ.get("GOOGLE_CLOUD_PROJECT")
+                or detected_project
+                or ""
             )
 
         if not _CACHED_CREDENTIALS.valid or _CACHED_CREDENTIALS.expired:
@@ -176,6 +179,7 @@ def get_fresh_gcp_headers(quota_project: str | None = None) -> tuple[dict[str, s
 
         project_id = (
             quota_project
+            or os.environ.get("TARGET_GCP_PROJECT")
             or os.environ.get("GOOGLE_CLOUD_PROJECT")
             or _CACHED_PROJECT_ID
             or ""

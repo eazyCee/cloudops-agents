@@ -37,7 +37,10 @@ from .tools import (
 
 
 def _resolve_project_id() -> str:
-    env_proj = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    env_proj = (
+        os.environ.get("TARGET_GCP_PROJECT", "").strip()
+        or os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    )
     if env_proj:
         return env_proj
     try:
