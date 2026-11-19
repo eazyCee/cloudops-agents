@@ -157,7 +157,7 @@ All Google Cloud Remote MCP servers become available automatically when `./deplo
 `deploy.sh` creates a dedicated Service Account (`cloudops-finops-agent-sa@<PROJECT_ID>.iam.gserviceaccount.com`) with least-privilege roles:
 
 - **Read-Only Mode (`--mode readonly`, default):**
-  `roles/aiplatform.user`, `roles/recommender.viewer`, `roles/monitoring.viewer`, `roles/logging.viewer`, `roles/compute.viewer`, `roles/container.viewer`, `roles/run.viewer`, `roles/bigquery.dataViewer`, `roles/bigquery.jobUser`
+  `roles/aiplatform.user`, `roles/mcp.toolUser`, `roles/serviceusage.serviceUsageConsumer`, `roles/recommender.viewer`, `roles/monitoring.viewer`, `roles/logging.viewer`, `roles/compute.viewer`, `roles/container.viewer`, `roles/run.viewer`, `roles/bigquery.dataViewer`, `roles/bigquery.jobUser`
 - **Read-Write Mode (`--mode readwrite`, adds):**
   `roles/recommender.computeAdmin`, `roles/recommender.cloudsqlAdmin`, `roles/recommender.runAdmin`, `roles/compute.instanceAdmin.v1`, `roles/container.developer`, `roles/run.developer`
 - **Optional Billing Account Scope (`--billing-account <ID>`):**

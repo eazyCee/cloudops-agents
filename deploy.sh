@@ -201,6 +201,8 @@ setup_apis_and_iam() {
   echo "[3/4] Binding least-privilege IAM roles (mode=$MODE)..."
   local readonly_roles=(
     roles/aiplatform.user
+    roles/mcp.toolUser
+    roles/serviceusage.serviceUsageConsumer
     roles/recommender.viewer
     roles/monitoring.viewer
     roles/logging.viewer
