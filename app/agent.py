@@ -1,159 +1,332 @@
+"""Google Cloud FinOps + CloudOps Multi-Agent Orchestrator (Google ADK).
+
+Implements a mandatory "Check Recommender & Telemetry First Before Acting"
+pattern connecting Google Cloud FinOps Hub (Recommender API + Cloud Billing +
+BigQuery exports) with Cloud Monitoring, Cloud Audit Logs, Compute Engine,
+GKE, Cloud Run, Terraform, and Kubernetes YAML generation.
+"""
+
+from __future__ import annotations
+
 import os
-import json
+from typing import Any
+
 import dotenv
 import google.auth
-import google.auth.transport.requests
 from google.adk.agents import Agent
-from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
 from google.adk.tools import AgentTool
 
-# Load environment variables
 dotenv.load_dotenv()
-from .tools import logging_toolset, monitoring_toolset, gke_toolset, compute_toolset, cloudrun_toolset
 
-# Get GCP Project ID
-_, project_id = google.auth.default()
+from .finops_tools import (
+    check_resource_recommendations,
+    list_finops_recommender_catalog,
+    mark_recommendation_claimed,
+    mark_recommendation_succeeded,
+)
+from .tools import (
+    bigquery_toolset,
+    billing_toolset,
+    cloudrun_toolset,
+    compute_toolset,
+    gke_toolset,
+    logging_toolset,
+    monitoring_toolset,
+    recommender_toolset,
+)
 
-# Define Logging Agent
+
+def _resolve_project_id() -> str:
+    env_proj = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if env_proj:
+        return env_proj
+    try:
+        _, detected = google.auth.default()
+        return detected or "<set GOOGLE_CLOUD_PROJECT>"
+    except Exception:
+        return "<set GOOGLE_CLOUD_PROJECT>"
+
+
+def _present(*items: Any) -> list[Any]:
+    return [item for item in items if item is not None]
+
+
+MAX_TOOL_OUTPUT_CHARS = 24_000
+
+
+def _truncate_large_tool_output(tool: Any, args: dict[str, Any], tool_context: Any, tool_response: Any) -> Any:
+    """Guardrail callback preventing oversized Monitoring/Logging MCP payloads from blowing the context window."""
+    if tool_response is None:
+        return None
+    serialized = str(tool_response)
+    if len(serialized) <= MAX_TOOL_OUTPUT_CHARS:
+        return None
+    return {
+        "truncated": True,
+        "original_length_chars": len(serialized),
+        "note": (
+            "Tool response exceeded 24,000 characters and was safely truncated. "
+            "Use narrower time intervals, aggregation/PromQL step, or tighter filters."
+        ),
+        "preview": serialized[:MAX_TOOL_OUTPUT_CHARS],
+    }
+
+
+PROJECT_ID = _resolve_project_id()
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+EXECUTION_MODE = os.environ.get("AGENT_EXECUTION_MODE", "readwrite").strip().lower()
+BILLING_ACCOUNT_ID = os.environ.get("BILLING_ACCOUNT_ID", "").strip()
+
+# ---------------------------------------------------------------------------
+# 1. FinOps Hub & Recommender Agent (NEW — Checked FIRST Before Actions)
+# ---------------------------------------------------------------------------
+finops_recommender_agent = Agent(
+    name="finops_recommender_agent",
+    model=MODEL_NAME,
+    description=(
+        "Checks Google Cloud FinOps Hub recommendations (Recommender API), "
+        "Cloud Billing SKU pricing, BigQuery billing/recommendations exports, "
+        "and syncs recommendation states (markClaimed / markSucceeded)."
+    ),
+    instruction=f"""
+    You are a focused Google Cloud FinOps Hub & Recommender specialist agent.
+    Default project: {PROJECT_ID}.
+    Default billing account (if configured): {BILLING_ACCOUNT_ID or "not configured"}.
+    Execution mode: {EXECUTION_MODE}.
+
+    Your job is to inspect Google Cloud FinOps Hub data BEFORE any CloudOps action is taken,
+    summarize cost/utilization findings clearly, and keep FinOps Hub recommendation states in sync.
+
+    Capabilities & Tools:
+    1. Pre-Action & Multi-Recommender Scan:
+       - `check_resource_recommendations`: Fast multi-recommender REST scan across Compute Engine
+         (VM/MIG rightsizing, idle VMs/disks/IPs/images/reservations), GKE (DiagnosisRecommender),
+         Cloud SQL (idle/overprovisioned/underprovisioned), Cloud Run (CostRecommender),
+         Unattended Projects, and CUDs (if billing_account_id is available).
+       - `list_finops_recommender_catalog`: Lists all 16 verified FinOps Hub Recommender IDs and scopes.
+    2. Official Google Cloud Recommender MCP (`recommender.googleapis.com/mcp`):
+       - `list_recommendations`, `get_recommendation`, `list_insights`, `get_insight`
+         for deep inspection of specific recommendations and utilization insights.
+    3. Official Cloud Billing MCP (`cloudbilling.googleapis.com/mcp`):
+       - `list_billing_accounts`, `list_project_billing_info`, `list_billing_account_prices`,
+         `get_billing_account_price`, `list_skus` to look up linked billing accounts and SKU rates.
+    4. Official BigQuery MCP (`bigquery.googleapis.com/mcp`):
+       - `list_dataset_ids`, `list_table_ids`, `execute_sql_readonly` for querying
+         Detailed Billing exports (`gcp_billing_export_resource_v1_*`), FOCUS exports
+         (`gcp_billing_export_focus_*`), or Org-wide `recommendations_export` tables when available.
+    5. Closed-Loop FinOps Hub State Sync (only when user has approved remediation):
+       - `mark_recommendation_claimed`: Locks a recommendation (`ACTIVE` -> `CLAIMED`) before action.
+       - `mark_recommendation_succeeded`: Marks a recommendation `SUCCEEDED` after action succeeds.
+
+    Important guidance:
+    - Always return exact resource names, Recommender IDs, subtypes, projected monthly savings,
+      and recommendation `name` + `etag` so downstream actions can track them.
+    - If 0 active recommendations are returned, explicitly note that Active Assist Recommenders
+      observe 8-14 days of history, and suggest correlating with Cloud Monitoring + Audit Logs
+      for recent peak-event scale-ups.
+    """,
+    tools=_present(
+        list_finops_recommender_catalog,
+        check_resource_recommendations,
+        mark_recommendation_claimed,
+        mark_recommendation_succeeded,
+        recommender_toolset,
+        billing_toolset,
+        bigquery_toolset,
+    ),
+    after_tool_callback=_truncate_large_tool_output,
+)
+
+# ---------------------------------------------------------------------------
+# 2. Logging Agent (Cloud Logging & Cloud Audit Logs)
+# ---------------------------------------------------------------------------
 logging_agent = Agent(
     name="logging_agent",
-    model="gemini-3-flash-preview",
-    instruction=f"""
-    You are a focused Logging agent. You help users search and retrieve log entries, list log names, and manage log buckets and views in Google Cloud Logging. 
+    model=MODEL_NAME,
+    description="Searches Cloud Logging and Cloud Audit Logs to debug issues or attribute who scaled/changed resources.",
+    instruction="""
+    You are a focused Logging & Cloud Audit Logs agent. You help users search and retrieve log entries,
+    inspect Admin Activity Audit Logs (e.g., who scaled up a VM, MIG, GKE node pool, or Cloud Run service
+    for a peak event and when), list log names, and inspect log buckets/views.
 
     Capabilities:
-    - list_log_entries: Use this as the primary tool to search and retrieve log entries from Google Cloud Logging. It's essential for debugging application behavior, finding specific error messages, or auditing events. The 'filter' is powerful and can be used to select logs by severity, resource type, text content, and more. IMPORTANT: This tool will only work with a single resource project at a time. Calls with multiple resource projects will fail.
-    - list_log_names: Use this as the primary tool to list the log names in a Google Cloud project. This is useful for discovering what logs are available for a project. Only logs which have log entries will be listed.
-    - get_bucket: Use this as the primary tool to get a specific log bucket by name. Log buckets are containers that store and organize your log data.
-    - list_buckets: Use this as the primary tool to list the log buckets in a Google Cloud project. Log buckets are containers that store and organize your log data. This tool is useful for understanding how your logs are stored and for managing your logging configurations.
-    - get_view: Use this as the primary tool to get a specific view on a log bucket. Log views provide fine-grained access control to the logs in your buckets.
-    - list_views: Use this as the primary tool to list the log views in a given log bucket. Log views provide fine-grained access control to the logs in your buckets. This is useful for managing who has access to which logs.
+    - list_log_entries: Primary tool to search Cloud Logging & Cloud Audit Logs (`cloudaudit.googleapis.com/activity`).
+      IMPORTANT: Always query a single project at a time and pass a small `pageSize` (e.g. 10-20) and time filter.
+    - list_log_names, get_bucket, list_buckets, get_view, list_views.
     """,
-    tools=[logging_toolset]
+    tools=_present(logging_toolset),
+    after_tool_callback=_truncate_large_tool_output,
 )
 
-# Define Monitoring Agent
+# ---------------------------------------------------------------------------
+# 3. Monitoring Agent (Cloud Monitoring Time Series & Alerts)
+# ---------------------------------------------------------------------------
 monitoring_agent = Agent(
     name="monitoring_agent",
-    model="gemini-3-flash-preview",
-    instruction=f"""
-    You are a focused Monitoring agent. You help users list time series data, query metrics, and manage alert policies, alerts, metric descriptors, and dashboards in Google Cloud Monitoring.
-    
+    model=MODEL_NAME,
+    description="Queries Cloud Monitoring time series, PromQL metrics, and alerts to verify live utilization before actions.",
+    instruction="""
+    You are a focused Cloud Monitoring agent. You query PromQL ranges, aggregated time series, and alerts
+    in Google Cloud Monitoring.
+
+    Use this to verify live CPU, memory, disk, or request utilization BEFORE taking any rightsizing
+    or downscaling action (especially useful right after a peak event when utilization has dropped
+    back to baseline before Recommender's 8-14 day window completes).
+
+    IMPORTANT query efficiency rules:
+    - Prefer `query_range` (PromQL) with a coarse step (e.g. `3600s` for multi-day windows or `300s` for last 2 hours).
+    - When using `list_timeseries`, ALWAYS specify a tight filter (exact instance/resource name), a short interval
+      (e.g. last 24h), aggregation (`alignmentPeriod: "3600s"`, `perSeriesAligner: "ALIGN_MEAN"`), and `pageSize: 5`
+      so responses stay compact.
+
     Capabilities:
-    - list_timeseries: Lists time series data from the Google Cloud Monitoring API
-    - query_range: Evaluate a PromQL query in a range of time
-    - get_alert_policy: Use this as the primary tool to get information about a specific alerting policy. Alerting policies define the conditions under which you want to be notified about issues with your services. This is useful for understanding the details of a specific alert configuration.
-    - list_alert_policies: Use this as the primary tool to list the alerting policies in a Google Cloud project. Alerting policies define the conditions under which you want to be notified about issues with your services. This is useful for understanding what alerts are currently configured.
-    - get_alert: Use this as the primary tool to get information about a specific alert. An alert is the representation of a violation of an alert policy. This is useful for understanding the details of a specific alert.
-    - list_alerts: Use this as the primary tool to list the alerts in a Google Cloud project. An alert is the representation of a violation of an alert policy. This is useful for understanding current and past violations of an alert policy.
-    - list_metric_descriptors: Use this as the primary tool to discover the types of metrics available in a Google Cloud project. This is a good first step to understanding what data is available for monitoring and building dashboards or alerts.
-    - list_dashboards: Use this as the primary tool to retrieve a list of existing custom monitoring dashboards in a Google Cloud project. Custom monitoring dashboards let users view and analyze data from different sources in the same context. This is useful for understanding what custom dashboards are currently configured and available in a given project.
-    - get_dashboard: Use this as the primary tool to retrieve a single specific custom monitoring dashboard from a Google Cloud project using the resource name of the requested dashboard. Custom monitoring dashboards let users view and analyze data from different sources in the same context. This is often used as a follow on to list_dashboards to get full details on a specific dashboard.
+    - query_range, list_timeseries, list_alerts, get_alert, list_metric_descriptors.
     """,
-    tools=[monitoring_toolset]
+    tools=_present(monitoring_toolset),
+    after_tool_callback=_truncate_large_tool_output,
 )
 
-# Define GKE Agent
+# ---------------------------------------------------------------------------
+# 4. GKE Agent
+# ---------------------------------------------------------------------------
 gke_agent = Agent(
     name="gke_agent",
-    model="gemini-3-flash-preview",
-    instruction=f"""
-    You are a focused GKE agent. You help users manage GKE clusters, node pools, operations, and interact with Kubernetes resources using standard commands.
-    
+    model=MODEL_NAME,
+    description="Inspects and manages GKE clusters, node pools, operations, and Kubernetes resources.",
+    instruction="""
+    You are a focused GKE agent. You help users inspect and manage GKE clusters, node pools,
+    operations, and Kubernetes resources.
+
     Capabilities:
-    - kube_api_resources: Retrieves the available API groups and resources from a Kubernetes cluster. This is similar to running kubectl api-resources.
-    - kube_get: Gets one or more Kubernetes resources from a cluster. Resources can be filtered by type, name, namespace, and label selectors. Returns the resources in YAML format. This is similar to running kubectl get.
-    - list_clusters: Lists GKE clusters in a given project and location. Location can be a region, zone, or '-' for all locations.
-    - get_cluster: Gets the details of a specific GKE cluster.
-    - list_operations: Lists GKE operations in a given project and location. Location can be a region, zone, or '-' for all locations.
-    - get_operation: Gets the details of a specific GKE operation.
-    - list_node_pools: Lists the node pools for a specific GKE cluster.
-    - get_node_pool: Gets the details of a specific node pool within a GKE cluster.
+    - kube_api_resources, kube_get, list_clusters, get_cluster,
+      list_operations, get_operation, list_node_pools, get_node_pool.
     """,
-    tools=[gke_toolset]
+    tools=_present(gke_toolset),
 )
 
-# Define Terraform Agent
-terraform_agent = Agent(
-    name="terraform_agent",
-    model="gemini-3-flash-preview",
-    instruction=f"""
-    You are a focused Terraform agent. You help users create Terraform scripts based on their requirements.
-    
-    Capabilities:
-    - Generate Terraform configuration files (*.tf) based on user descriptions of infrastructure.
-    - Provide explanations for the generated Terraform code.
-    - Suggest best practices for Terraform configurations.
-    
-    You do not have tools to apply or execute Terraform scripts. You only generate the code.
-    """,
-    description="Creates Terraform scripts based on user requirements."
-)
-
-# Define YAML Creator Agent
-yaml_creator = Agent(
-    name="yaml_creator",
-    model="gemini-3-flash-preview",
-    instruction=f"""
-    You are a focused YAML creator agent. You help users create Kubernetes YAML manifests for GKE based on their requirements.
-    
-    Capabilities:
-    - Generate Kubernetes YAML manifests (Deployments, Services, ConfigMaps, etc.) for GKE.
-    - Follow best practices for GKE resources, including:
-        - Setting appropriate resource requests and limits for CPU and memory.
-        - Using health checks (liveness and readiness probes).
-        - Configuring appropriate restart policies.
-    - Provide explanations for the generated YAML code.
-    
-    You do not have tools to deploy or apply the YAML files. You only generate the content.
-    """,
-    description="Creates Kubernetes YAML manifests for GKE following best practices."
-)
-
-# Define Compute Agent
+# ---------------------------------------------------------------------------
+# 5. Compute Engine Agent
+# ---------------------------------------------------------------------------
 compute_agent = Agent(
     name="compute_agent",
-    model="gemini-3-flash-preview",
+    model=MODEL_NAME,
+    description="Inspects and manages Compute Engine VMs, disks, and networks.",
     instruction=f"""
-    You are a focused Compute Engine agent. You help users manage Compute Engine resources (VMs, disks, networks, etc.) in Google Cloud.
-    Use the compute_toolset to interact with the Compute Engine API.
+    You are a focused Compute Engine agent. You inspect and manage Compute Engine resources
+    (VMs, disks, networks, etc.) in Google Cloud using the Compute Engine MCP toolset.
+    Current execution mode: {EXECUTION_MODE}.
+    If execution mode is 'readonly', NEVER execute mutating operations (create, delete, stop, resize);
+    only read/list resources and report the exact recommended gcloud or Terraform action instead.
     """,
-    description="Manages Compute Engine resources.",
-    tools=[compute_toolset]
+    tools=_present(compute_toolset),
 )
 
-# Define Cloud Run Agent
+# ---------------------------------------------------------------------------
+# 6. Cloud Run Agent
+# ---------------------------------------------------------------------------
 cloudrun_agent = Agent(
     name="cloudrun_agent",
-    model="gemini-3-flash-preview",
+    model=MODEL_NAME,
+    description="Inspects and manages Cloud Run services and jobs.",
     instruction=f"""
-    You are a focused Cloud Run agent. You help users manage Cloud Run services and jobs in Google Cloud.
-    Use the cloudrun_toolset to interact with the Cloud Run API.
+    You are a focused Cloud Run agent. You inspect and manage Cloud Run services and jobs
+    in Google Cloud using the Cloud Run MCP toolset.
+    Current execution mode: {EXECUTION_MODE}.
+    If execution mode is 'readonly', NEVER execute mutating deployments or updates;
+    only inspect services and report recommended changes.
     """,
-    description="Manages Cloud Run resources.",
-    tools=[cloudrun_toolset]
+    tools=_present(cloudrun_toolset),
 )
 
-# Root Agent to orchestrate or expose them
+# ---------------------------------------------------------------------------
+# 7. Terraform & Kubernetes YAML IaC Agents (Safe GitOps Remediation)
+# ---------------------------------------------------------------------------
+terraform_agent = Agent(
+    name="terraform_agent",
+    model=MODEL_NAME,
+    description="Generates Terraform HCL configs and GitOps diffs for FinOps rightsizing or new infrastructure.",
+    instruction="""
+    You are a focused Terraform IaC agent. You generate clean, production-grade Terraform (*.tf)
+    configurations and remediation diffs (e.g., downscaling MIG target_size, VM machine_type,
+    Cloud SQL tiers, or Cloud Run min_instance_count to match FinOps Hub recommendations without
+    causing Terraform state drift).
+    You do not apply Terraform directly; you output clear HCL blocks and explanations.
+    """,
+)
+
+yaml_creator = Agent(
+    name="yaml_creator",
+    model=MODEL_NAME,
+    description="Generates Kubernetes YAML manifests for GKE following FinOps and reliability best practices.",
+    instruction="""
+    You are a focused Kubernetes YAML creator agent for GKE. You generate manifests (Deployments,
+    HPA/VPA, Services, ConfigMaps) with right-sized CPU/memory requests and limits, health probes,
+    and restart policies aligned with GKE DiagnosisRecommender findings.
+    You only generate manifests; you do not apply them directly.
+    """,
+)
+
+# ---------------------------------------------------------------------------
+# Root Orchestrator: Enforces "Check Recommender & Telemetry Before Acting"
+# ---------------------------------------------------------------------------
 root_agent = Agent(
     name="cloud_ops_orchestrator",
-    model="gemini-3-flash-preview",
+    model=MODEL_NAME,
     instruction=f"""
-    By default you'll use the project id: {project_id} unless specified otherwise.
-    When greeting, always say that you currently have access to the project {project_id}.
-    You are a Cloud Operations orchestrator. You delegate tasks to specialized agents.
-    Currently, you have specialized agents for:
-    - Logging: Use logging_agent for questions about logs.
-    - Monitoring: Use monitoring_agent for questions about metrics and alerts.
-    - GKE: Use gke_agent for questions about clusters and Kubernetes resources.
-    - Terraform: Use terraform_agent for creating Terraform scripts based on requirements.
-    - YAML Creator: Use yaml_creator for creating Kubernetes YAML manifests for GKE.
-    - Compute: Use compute_agent for questions about Compute Engine resources.
-    - Cloud Run: Use cloudrun_agent for questions about Cloud Run resources.
+    You are the Google Cloud Operations & FinOps Orchestrator.
+    Default GCP Project ID: `{PROJECT_ID}` (unless the user specifies another project).
+    Execution Mode: `{EXECUTION_MODE}` (`readonly` = inspect/summarize/IaC only; `readwrite` = can execute approved actions).
 
+    When greeting the user, always state that you have access to project `{PROJECT_ID}` (mode: `{EXECUTION_MODE}`)
+    and can summarize FinOps Hub recommendations, investigate peak-event waste, and safely remediate resources.
+
+    ### MANDATORY PRE-ACTION PROTOCOL ("CHECK BEFORE YOU ACT")
+    Whenever a user asks to optimize, resize, stop, delete, scale down, scale up, or remediate ANY cloud
+    resource (Compute Engine VM/MIG, GKE cluster/workload, Cloud Run service, Cloud SQL, disks, IPs):
+
+    1. **CHECK FINOPS HUB & RECOMMENDER API FIRST (Mandatory):**
+       - Delegate to `finops_recommender_agent` FIRST to query `recommender.googleapis.com` for active
+         FinOps Hub recommendations and insights on the target project/location/resource.
+       - Never skip this step before proposing or executing a resource change.
+    2. **CORRELATE LIVE TELEMETRY & AUDIT LOGS:**
+       - Delegate to `monitoring_agent` to check recent utilization (CPU/memory/requests). This is
+         essential for catching forgotten peak-event scale-ups quickly (since Recommenders wait 8-14 days).
+       - If helpful to explain *why* a resource was scaled up (e.g., after a flash sale or load test),
+         delegate to `logging_agent` to check Cloud Audit Logs for recent resize/create events.
+    3. **PRESENT PRE-ACTION BRIEF & CONFIRMATION GATE:**
+       - Present a concise summary showing:
+         (a) Active FinOps Hub recommendation(s) & projected monthly savings (or note if none exist yet),
+         (b) Live Monitoring utilization & Audit Log context,
+         (c) Exact proposed action (Direct API mutation vs. Terraform/YAML PR via `terraform_agent` / `yaml_creator`).
+       - If the mode is `readonly`, do NOT execute mutations — offer the exact Terraform HCL / gcloud command.
+       - If the mode is `readwrite`, ask for explicit user confirmation before executing any destructive
+         or mutating action (unless the user already gave explicit execution approval in this turn).
+    4. **CLOSED-LOOP EXECUTION & FINOPS HUB SYNC:**
+       - Once confirmed in `readwrite` mode:
+         (a) If an active FinOps Hub recommendation matches, ask `finops_recommender_agent` to call
+             `mark_recommendation_claimed` (save `new_etag`).
+         (b) Execute the approved action using `compute_agent`, `cloudrun_agent`, or `gke_agent`.
+         (c) Ask `finops_recommender_agent` to call `mark_recommendation_succeeded` so FinOps Hub
+             reflects the realized savings.
+
+    ### Available Specialist Agents
+    - `finops_recommender_agent`: FinOps Hub recommendations (Recommender API), Billing/SKU pricing, BigQuery billing exports, and `markClaimed`/`markSucceeded`.
+    - `monitoring_agent`: Cloud Monitoring time series, PromQL, alerts, dashboards.
+    - `logging_agent`: Cloud Logging & Cloud Audit Logs (change attribution & debugging).
+    - `compute_agent`: Compute Engine VMs, disks, networks.
+    - `gke_agent`: GKE clusters, node pools, Kubernetes resources.
+    - `cloudrun_agent`: Cloud Run services and jobs.
+    - `terraform_agent`: Generates Terraform HCL configs & GitOps remediation diffs.
+    - `yaml_creator`: Generates GKE Kubernetes YAML manifests.
     """,
-    tools=[AgentTool(logging_agent), AgentTool(monitoring_agent), AgentTool(gke_agent), AgentTool(terraform_agent), AgentTool(yaml_creator), AgentTool(compute_agent), AgentTool(cloudrun_agent)]
+    tools=[
+        AgentTool(finops_recommender_agent),
+        AgentTool(monitoring_agent),
+        AgentTool(logging_agent),
+        AgentTool(compute_agent),
+        AgentTool(gke_agent),
+        AgentTool(cloudrun_agent),
+        AgentTool(terraform_agent),
+        AgentTool(yaml_creator),
+    ],
 )
-
-
-

@@ -1,27 +1,85 @@
 [
   {
+    "name": "recommender",
+    "url": "https://recommender.googleapis.com/mcp",
+    "auth_type": "gcp_oauth",
+    "enabled": true,
+    "tool_filter": [
+      "list_recommendations",
+      "get_recommendation",
+      "list_insights",
+      "get_insight"
+    ],
+    "description": "Google Cloud Recommender API (FinOps Hub cost & utilization recommendations)"
+  },
+  {
+    "name": "billing",
+    "url": "https://cloudbilling.googleapis.com/mcp",
+    "auth_type": "gcp_oauth",
+    "enabled": true,
+    "tool_filter": [
+      "list_billing_accounts",
+      "get_billing_account",
+      "get_project_billing_info",
+      "list_project_billing_info",
+      "list_billing_account_prices",
+      "get_billing_account_price",
+      "list_skus"
+    ],
+    "description": "Cloud Billing accounts, project billing info, and SKU pricing catalog"
+  },
+  {
+    "name": "bigquery",
+    "url": "https://bigquery.googleapis.com/mcp",
+    "auth_type": "gcp_oauth",
+    "enabled": true,
+    "tool_filter": [
+      "list_dataset_ids",
+      "list_table_ids",
+      "execute_sql_readonly"
+    ],
+    "description": "Read-only BigQuery SQL over Billing Detailed/FOCUS exports & Org Recommendations export"
+  },
+  {
     "name": "monitoring",
     "url": "https://monitoring.googleapis.com/mcp",
-    "auth_type": "gcp_oauth"
+    "auth_type": "gcp_oauth",
+    "enabled": true,
+    "tool_filter": [
+      "query_range",
+      "list_timeseries",
+      "list_alerts",
+      "get_alert",
+      "list_metric_descriptors"
+    ],
+    "description": "Cloud Monitoring PromQL, time series, and alerts"
   },
   {
     "name": "logging",
     "url": "https://logging.googleapis.com/mcp",
-    "auth_type": "gcp_oauth"
+    "auth_type": "gcp_oauth",
+    "enabled": true,
+    "description": "Cloud Logging & Cloud Audit Logs for change attribution"
   },
   {
     "name": "gke",
     "url": "https://container.googleapis.com/mcp",
-    "auth_type": "gcp_oauth"
+    "auth_type": "gcp_oauth",
+    "enabled": true,
+    "description": "Google Kubernetes Engine clusters, node pools, and Kubernetes resources"
   },
   {
     "name": "compute",
     "url": "https://compute.googleapis.com/mcp",
-    "auth_type": "gcp_oauth"
+    "auth_type": "gcp_oauth",
+    "enabled": true,
+    "description": "Compute Engine VM instances, disks, and instance groups"
   },
   {
     "name": "cloudrun",
     "url": "https://run.googleapis.com/mcp",
-    "auth_type": "gcp_oauth"
+    "auth_type": "gcp_oauth",
+    "enabled": true,
+    "description": "Cloud Run services and jobs"
   }
 ]

@@ -1,0 +1,11 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+.env
+app/.env
+fail-demo
+README.md
+deploy.sh
